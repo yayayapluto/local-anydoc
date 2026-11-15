@@ -1,0 +1,8 @@
+services:
+  ocr:
+    build: ./ocr
+    image: anydoc-ocr:local
+    container_name: anydoc-ocr
+    ports:
+      - "127.0.0.1:8001:8000"
+    restart: "no"

@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>anydoc hybrid</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1a1f26; --muted: #5b6472;
+    --border: #d9dee6; --accent: #2563eb; --accent-text: #ffffff;
+    --ok: #15803d; --ok-bg: #dcfce7; --off: #5b6472; --off-bg: #e5e7eb;
+    --badge: #eef2ff; --badge-text: #3730a3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151a; --card: #1c2128; --text: #e6e9ee; --muted: #9aa4b2;
+      --border: #2d343d; --accent: #3b82f6; --accent-text: #ffffff;
+      --ok: #4ade80; --ok-bg: #14321f; --off: #9aa4b2; --off-bg: #2d343d;
+      --badge: #26264a; --badge-text: #a5b4fc;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.4rem; margin: 0 0 12px; }
+  #ocrBadge { display: inline-block; padding: 4px 12px; border-radius: 999px; font-size: .85rem; margin-bottom: 20px; }
+  #ocrBadge.on { color: var(--ok); background: var(--ok-bg); }
+  #ocrBadge.off { color: var(--off); background: var(--off-bg); }
+  #drop { border: 2px dashed var(--border); border-radius: 12px; padding: 40px 16px; text-align: center; cursor: pointer; background: var(--card); }
+  #drop.over { border-color: var(--accent); }
+  #drop p { margin: 0 0 12px; color: var(--muted); }
+  button { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 8px; padding: 8px 16px; font-size: .9rem; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  .result { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-top: 16px; }
+  .result header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .result h2 { font-size: 1rem; margin: 0; word-break: break-all; }
+  .badge { font-size: .75rem; padding: 2px 10px; border-radius: 999px; background: var(--badge); color: var(--badge-text); white-space: nowrap; }
+  .status { color: var(--muted); font-size: .9rem; margin: 8px 0; }
+  .status.err { color: #dc2626; }
+  .bar { height: 6px; background: var(--off-bg); border-radius: 999px; overflow: hidden; margin: 8px 0 4px; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width .4s; }
+  .bar-text { font-size: .8rem; color: var(--muted); margin: 0 0 8px; }
+  @media (prefers-color-scheme: dark) { .status.err { color: #f87171; } }
+  textarea { width: 100%; min-height: 220px; resize: vertical; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font: 13px/1.5 ui-monospace, monospace; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>anydoc hybrid</h1>
+  <div id="ocrBadge" class="off">OCR: mati — jalankan start-ocr.bat</div>
+  <div id="drop">
+    <p>Tarik-lepas file ke sini, atau</p>
+    <button type="button" id="pick">Pilih file</button>
+    <input type="file" id="fileInput" multiple hidden
+      accept=".docx,.doc,.pptx,.ppt,.xlsx,.xls,.odt,.ods,.odp,.rtf,.epub,.csv,.pdf">
+  </div>
+  <div id="results"></div>
+</div>
+<script type="module">
+import init, { toMarkdownBytes } from "./vendor/anydoc_wasm.js";
+
+const OCR_URL = "http://127.0.0.1:8001";
+const MAX_MB = 50;
+const MAX_BYTES = MAX_MB * 1024 * 1024;
+
+await init();
+
+const badge = document.getElementById("ocrBadge");
+const drop = document.getElementById("drop");
+const pick = document.getElementById("pick");
+const fileInput = document.getElementById("fileInput");
+const results = document.getElementById("results");
+
+async function ocrHealthy() {
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 1500);
+    const r = await fetch(OCR_URL + "/health", { signal: ctl.signal });
+    clearTimeout(t);
+    return r.ok;
+  } catch { return false; }
+}
+
+async function pollBadge() {
+  if (await ocrHealthy()) {
+    badge.textContent = "OCR: aktif";
+    badge.className = "on";
+  } else {
+    badge.textContent = "OCR: mati — jalankan start-ocr.bat";
+    badge.className = "off";
+  }
+}
+pollBadge();
+setInterval(pollBadge, 5000);
+
+pick.addEventListener("click", () => fileInput.click());
+drop.addEventListener("click", (e) => { if (e.target === drop) fileInput.click(); });
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (e) => {
+  e.preventDefault();
+  drop.classList.remove("over");
+  handleFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener("change", () => { handleFiles(fileInput.files); fileInput.value = ""; });
+
+function makeResult(name) {
+  const div = document.createElement("div");
+  div.className = "result";
+  div.innerHTML = `<header><h2></h2></header><div class="status"></div>`;
+  div.querySelector("h2").textContent = name;
+  results.prepend(div);
+  return {
+    div,
+    status(msg, isErr) {
+      const s = div.querySelector(".status");
+      s.textContent = msg;
+      s.className = isErr ? "status err" : "status";
+    },
+    badge(text) {
+      const b = document.createElement("span");
+      b.className = "badge";
+      b.textContent = text;
+      div.querySelector("header").appendChild(b);
+    },
+    show(markdown, baseName) {
+      const ta = document.createElement("textarea");
+      ta.readOnly = true;
+      ta.value = markdown;
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      const copy = document.createElement("button");
+      copy.textContent = "Salin";
+      copy.addEventListener("click", () => navigator.clipboard.writeText(ta.value));
+      const dl = document.createElement("button");
+      dl.className = "ghost";
+      dl.textContent = "Unduh .md";
+      dl.addEventListener("click", () => {
+        const blob = new Blob([ta.value], { type: "text/markdown" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = baseName + ".md";
+        a.click();
+        URL.revokeObjectURL(a.href);
+      });
+      actions.append(copy, dl);
+      div.append(ta, actions);
+    },
+    retryButton(onRetry) {
+      const btn = document.createElement("button");
+      btn.className = "ghost";
+      btn.textContent = "Coba lagi";
+      btn.addEventListener("click", () => { btn.remove(); onRetry(); });
+      div.appendChild(btn);
+    },
+  };
+}
+
+async function convertInBrowser(file, bytes) {
+  const ext = file.name.toLowerCase().split(".").pop();
+  if (ext === "csv") return toMarkdownBytes(bytes, "csv");
+  return toMarkdownBytes(bytes);
+}
+
+function makeBar(parent) {
+  const bar = document.createElement("div");
+  bar.className = "bar";
+  const fill = document.createElement("i");
+  bar.appendChild(fill);
+  const txt = document.createElement("p");
+  txt.className = "bar-text";
+  parent.appendChild(bar);
+  parent.appendChild(txt);
+  return {
+    set(pct, text) { fill.style.width = pct + "%"; txt.textContent = text; },
+    remove() { bar.remove(); txt.remove(); },
+  };
+}
+
+async function ocrWithProgress(file, r) {
+  const jobId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()));
+  const bar = makeBar(r.div);
+  bar.set(2, "Mengunggah ke OCR…");
+  let polling = true;
+  let last = 0, lastT = Date.now();
+  (async () => {
+    while (polling) {
+      try {
+        const p = await (await fetch(`${OCR_URL}/progress/${jobId}`)).json();
+        if (p.pct) {
+          const now = Date.now();
+          if (p.pct > last) { last = p.pct; lastT = now; }
+          else if (now - lastT > 3000 && last < 88) { last += 1; lastT = now; }
+          bar.set(last, p.text);
+        }
+      } catch {}
+      await new Promise((res) => setTimeout(res, 500));
+    }
+  })();
+  try {
+    const fd = new FormData();
+    fd.append("file", file);
+    const resp = await fetch(OCR_URL + "/ocr", { method: "POST", body: fd, headers: { "X-Job-Id": jobId } });
+    polling = false;
+    if (!resp.ok) {
+      const txt = await resp.text();
+      throw new Error(txt);
+    }
+    const data = await resp.json();
+    bar.set(100, "Selesai");
+    setTimeout(() => bar.remove(), 600);
+    r.status("");
+    r.badge("OCR (container)");
+    r.show(data.markdown, file.name.replace(/\.[^.]+$/, ""));
+  } catch (e2) {
+    polling = false;
+    bar.remove();
+    r.status("Gagal dikonversi: " + (e2.message || e2), true);
+  }
+}
+
+async function processFile(file) {
+  const r = makeResult(file.name);
+  if (file.size > MAX_BYTES) { r.status("Terlalu besar", true); return; }
+
+  const run = async () => {
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const md = await convertInBrowser(file, bytes);
+      r.status("");
+      r.badge("Diproses di browser");
+      r.show(md, file.name.replace(/\.[^.]+$/, ""));
+    } catch (err) {
+      const code = String(err.code || "");
+      const s = String(err);
+      if (/needso?cr/i.test(code) || /needsocr/i.test(s)) {
+        if (await ocrHealthy()) {
+          r.status("OCR berjalan… (bisa beberapa menit)");
+          await ocrWithProgress(file, r);
+        } else {
+          r.status("PDF ini hasil scan dan butuh OCR. Nyalakan container OCR (start-ocr.bat), lalu klik Coba lagi.", true);
+          r.retryButton(run);
+        }
+      } else if (code === "encrypted" || /encrypted/i.test(s)) {
+        r.status("File terenkripsi / berpassword", true);
+      } else {
+        r.status("Gagal dikonversi: " + (err.code || err.message), true);
+      }
+    }
+  };
+  await run();
+}
+
+async function handleFiles(list) {
+  for (const f of list) await processFile(f);
+}
+</script>
+</body>
+</html>
